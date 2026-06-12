@@ -32,6 +32,16 @@ db = client['sub_management']
 channels_col = db['channels']
 users_col = db['users']
 
+# updated code here
+def format_plan(minutes):
+    minutes = int(minutes)
+
+    if minutes >= 1440:
+        days = minutes // 1440
+        return f"{days} Days"
+
+    return f"{minutes} Minutes"
+
 # --- ADMIN LOGIC ---
 
 @bot.message_handler(commands=['start'])
@@ -48,10 +58,11 @@ def start_handler(message):
                 markup = InlineKeyboardMarkup()
                 # Display Dynamic Plans
                 for p_time, p_price in ch_data['plans'].items():
-                    label = f"{p_time} Min" if int(p_time) < 60 else f"{int(p_time)//1440} Days"
+                #    label = f"{p_time} Min" if int(p_time) < 60 else f"{int(p_time)//1440} Days"
+                    label = format_plan(p_time)
                     markup.add(InlineKeyboardButton(f"💳 {label} - ₹{p_price}", callback_data=f"select_{ch_id}_{p_time}"))
                 
-                markup.add(InlineKeyboardButton("📞 Contact Admin", url=f"https://t.me/{CONTACT_USERNAME}"))
+                # markup.add(InlineKeyboardButton("📞 Contact Admin", url=f"https://t.me/{CONTACT_USERNAME}"))
                 bot.send_message(message.chat.id, 
                     f"Welcome!\n\nYou are joining: *{ch_data['name']}*.\n\nPlease select a subscription plan below:", 
                     reply_markup=markup, parse_mode="Markdown")
@@ -130,10 +141,12 @@ def user_pays(call):
     
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("✅ I Have Paid", callback_data=f"paid_{ch_id}_{mins}"))
-    markup.add(InlineKeyboardButton("📞 Contact Admin", url=f"https://t.me/{CONTACT_USERNAME}"))
+    # markup.add(InlineKeyboardButton("📞 Contact Admin", url=f"https://t.me/{CONTACT_USERNAME}"))
     
     bot.send_photo(call.message.chat.id, qr_url, 
-                   caption=f"Plan: {mins} Minutes\nPrice: ₹{price}\nUPI ID: `{UPI_ID}`\n\nPlease complete the payment and click 'I Have Paid'.", 
+                   # caption=f"Plan: {mins} Minutes\nPrice: ₹{price}\nUPI ID: `{UPI_ID}`\n\nPlease complete the payment and click 'I Have Paid'.", 
+                   # caption=f"Plan: {format_plan(mins)}\nPrice: ₹{price}\n\nPlease complete the payment and click 'I Have Paid'.",
+                   caption=f"Plan: {format_plan(mins)}\nPrice: ₹{price}\nUPI ID: `{UPI_ID}`\n\nPlease complete the payment and click 'I Have Paid'.",
                    reply_markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('paid_'))
@@ -147,11 +160,11 @@ def admin_notify(call):
     markup.add(InlineKeyboardButton("✅ Approve", callback_data=f"app_{user.id}_{ch_id}_{mins}"))
     markup.add(InlineKeyboardButton("❌ Reject", callback_data=f"rej_{user.id}"))
     
-    bot.send_message(ADMIN_ID, f"🔔 *Payment Verification Required!*\n\nUser: {user.first_name}\nChannel: {ch_data['name']}\nPlan: {mins} Mins\nPrice: ₹{price}", 
+    bot.send_message(ADMIN_ID, f"🔔 *Payment Verification Required!*\n\nUser: {user.first_name}\nChannel: {ch_data['name']}\nPlan: {format_plan(mins)}\nPrice: ₹{price}", 
                      reply_markup=markup, parse_mode="Markdown")
     
-    u_markup = InlineKeyboardMarkup().add(InlineKeyboardButton("📞 Contact Admin", url=f"https://t.me/{CONTACT_USERNAME}"))
-    bot.send_message(call.message.chat.id, "✅ Your payment request has been sent. Please wait for Admin approval.", reply_markup=u_markup)
+    # u_markup = InlineKeyboardMarkup().add(InlineKeyboardButton("📞 Contact Admin", url=f"https://t.me/{CONTACT_USERNAME}"))
+    bot.send_message(call.message.chat.id, "✅ Your payment request has been sent. Please wait for Admin approval.")
 
 # --- APPROVAL & EXPIRY ---
 
@@ -169,7 +182,12 @@ def approve_now(call):
         
         users_col.update_one({"user_id": u_id, "channel_id": ch_id}, {"$set": {"expiry": expiry_datetime.timestamp()}}, upsert=True)
         
-        bot.send_message(u_id, f"🥳 *Payment Approved!*\n\nSubscription: {mins} Minutes\n\nJoin Link: {link.invite_link}\n\n⚠️ Note: This link and your access will expire in {mins} minutes.", parse_mode="Markdown")
+        # bot.send_message(u_id, f"🥳 *Payment Approved!*\n\nSubscription: {mins} Minutes\n\nJoin Link: {link.invite_link}\n\n⚠️ Note: This link and your access will expire in {mins} minutes.", parse_mode="Markdown")
+        bot.send_message(
+    u_id,
+    f"🥳 *Payment Approved!*\n\nSubscription: {format_plan(mins)}\n\nJoin Link: {link.invite_link}\n\n⚠️ Note: This link and your access will expire in {format_plan(mins)}.",
+    parse_mode="Markdown"
+)
         bot.edit_message_text(f"✅ Approved user {u_id} for {mins} mins.", call.message.chat.id, call.message.message_id)
         
     except Exception as e:
