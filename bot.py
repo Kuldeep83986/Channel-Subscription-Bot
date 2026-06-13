@@ -193,6 +193,40 @@ def approve_now(call):
     except Exception as e:
         bot.send_message(ADMIN_ID, f"❌ Error: {e}")
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith('rej_'))
+def reject_payment(call):
+    u_id = int(call.data.split('_')[1])
+
+    try:
+        markup = InlineKeyboardMarkup()
+        markup.add(
+            InlineKeyboardButton(
+                "📞 Contact Support",
+                url=f"https://t.me/{CONTACT_USERNAME}"
+            )
+        )
+
+        bot.send_message(
+            u_id,
+            "❌ *Payment Rejected*\n\n"
+            "We could not verify your payment.\n\n"
+            "If you have already paid, please contact support or submit a new payment request.",
+            reply_markup=markup,
+            parse_mode="Markdown"
+        )
+
+        bot.edit_message_text(
+            f"❌ Rejected user {u_id}",
+            call.message.chat.id,
+            call.message.message_id
+        )
+
+    except Exception as e:
+        bot.send_message(
+            ADMIN_ID,
+            f"❌ Reject Error: {e}"
+        )
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('manage_'))
 def manage_ch(call):
     ch_id = int(call.data.split('_')[1])
