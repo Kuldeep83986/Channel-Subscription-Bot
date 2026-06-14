@@ -31,6 +31,9 @@ client = MongoClient(MONGO_URI)
 db = client['sub_management']
 channels_col = db['channels']
 users_col = db['users']
+pending_payments_col = db['pending_payments']
+
+# --- NOTE: User plan selections are persisted in MongoDB (pending_payments_col) to survive bot restarts ---
 
 # updated code here
 def format_plan(minutes):
@@ -137,35 +140,66 @@ def user_pays(call):
     ch_data = channels_col.find_one({"channel_id": int(ch_id)})
     price = ch_data['plans'][mins]
     
+    # --- CHANGED: Store user's selected plan in MongoDB for screenshot association ---
+    # Uses MongoDB instead of in-memory dict so selections survive bot restarts.
+    pending_payments_col.update_one(
+        {"user_id": call.from_user.id},
+        {"$set": {
+            "user_id": call.from_user.id,
+            "channel_id": int(ch_id),
+            "plan": int(mins),
+            "price": int(price)
+        }},
+        upsert=True
+    )
+    
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=upi://pay?pa={UPI_ID}%26am={price}%26cu=INR"
     
+    # --- CHANGED: Removed "I Have Paid" button, added "Contact Support" button ---
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("✅ I Have Paid", callback_data=f"paid_{ch_id}_{mins}"))
-    # markup.add(InlineKeyboardButton("📞 Contact Admin", url=f"https://t.me/{CONTACT_USERNAME}"))
+    markup.add(InlineKeyboardButton("📞 Contact Support", url=f"https://t.me/{CONTACT_USERNAME}"))
     
+    # --- CHANGED: Updated caption with screenshot upload instructions ---
     bot.send_photo(call.message.chat.id, qr_url, 
-                   # caption=f"Plan: {mins} Minutes\nPrice: ₹{price}\nUPI ID: `{UPI_ID}`\n\nPlease complete the payment and click 'I Have Paid'.", 
-                   # caption=f"Plan: {format_plan(mins)}\nPrice: ₹{price}\n\nPlease complete the payment and click 'I Have Paid'.",
-                   caption=f"Plan: {format_plan(mins)}\nPrice: ₹{price}\nUPI ID: `{UPI_ID}`\n\nPlease complete the payment and click 'I Have Paid'.",
+                   caption=f"Plan: {format_plan(mins)}\nPrice: ₹{price}\nUPI ID: `{UPI_ID}`\n\n💳 Complete Payment\n📸 Send Screenshot\n\nPlease complete the payment and upload your payment screenshot here.",
                    reply_markup=markup, parse_mode="Markdown")
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('paid_'))
-def admin_notify(call):
-    _, ch_id, mins = call.data.split('_')
-    user = call.from_user
-    ch_data = channels_col.find_one({"channel_id": int(ch_id)})
-    price = ch_data['plans'][mins]
+# --- CHANGED: Replaced "I Have Paid" button handler with screenshot photo handler ---
+# Users now upload a payment screenshot directly in the bot chat.
+@bot.message_handler(content_types=['photo'])
+def handle_payment_screenshot(message):
+    user_id = message.from_user.id
     
+    # --- CHANGED: Check MongoDB for user's selected plan (survives bot restarts) ---
+    pending = pending_payments_col.find_one({"user_id": user_id})
+    if not pending:
+        bot.send_message(message.chat.id, "Please select a subscription plan first.")
+        return
+    
+    ch_id = pending['channel_id']
+    mins = str(pending['plan'])
+    price = str(pending['price'])
+    
+    ch_data = channels_col.find_one({"channel_id": ch_id})
+    
+    # --- CHANGED: Forward screenshot to admin with payment details and Approve/Reject buttons ---
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("✅ Approve", callback_data=f"app_{user.id}_{ch_id}_{mins}"))
-    # markup.add(InlineKeyboardButton("❌ Reject", callback_data=f"rej_{user.id}"))
-    markup.add(InlineKeyboardButton("❌ Reject", callback_data=f"rej_{user.id}_{ch_id}"))
+    markup.add(InlineKeyboardButton("✅ Approve", callback_data=f"app_{user_id}_{ch_id}_{mins}"))
+    markup.add(InlineKeyboardButton("❌ Reject", callback_data=f"rej_{user_id}_{ch_id}"))
     
-    bot.send_message(ADMIN_ID, f"🔔 *Payment Verification Required!*\n\nUser: {user.first_name}\nChannel: {ch_data['name']}\nPlan: {format_plan(mins)}\nPrice: ₹{price}", 
-                     reply_markup=markup, parse_mode="Markdown")
+    photo_id = message.photo[-1].file_id  # Highest resolution version
+    bot.send_photo(
+        ADMIN_ID,
+        photo_id,
+        caption=f"🔔 *Payment Verification Required!*\n\nUser: {message.from_user.first_name}\nUser ID: {user_id}\n\nChannel: {ch_data['name']}\nPlan: {format_plan(mins)}\nPrice: ₹{price}",
+        reply_markup=markup,
+        parse_mode="Markdown"
+    )
     
-    # u_markup = InlineKeyboardMarkup().add(InlineKeyboardButton("📞 Contact Admin", url=f"https://t.me/{CONTACT_USERNAME}"))
-    bot.send_message(call.message.chat.id, "✅ Your payment request has been sent. Please wait for Admin approval.")
+    # --- CHANGED: Clear user's pending selection from MongoDB after screenshot submission ---
+    pending_payments_col.delete_one({"user_id": user_id})
+    
+    bot.send_message(message.chat.id, "✅ Your payment screenshot has been sent for verification. Please wait for Admin approval.")
 
 # --- APPROVAL & EXPIRY ---
 
@@ -182,6 +216,9 @@ def approve_now(call):
         link = bot.create_chat_invite_link(ch_id, member_limit=1, expire_date=expiry_ts)
         
         users_col.update_one({"user_id": u_id, "channel_id": ch_id}, {"$set": {"expiry": expiry_datetime.timestamp()}}, upsert=True)
+        
+        # --- CHANGED: Clean up pending payment record after approval (safety) ---
+        pending_payments_col.delete_one({"user_id": u_id})
         
         # bot.send_message(u_id, f"🥳 *Payment Approved!*\n\nSubscription: {mins} Minutes\n\nJoin Link: {link.invite_link}\n\n⚠️ Note: This link and your access will expire in {mins} minutes.", parse_mode="Markdown")
         bot.send_message(
@@ -269,6 +306,9 @@ def reject_payment(call):
             call.message.chat.id,
             call.message.message_id
         )
+        
+        # --- CHANGED: Clean up pending payment record after rejection (safety) ---
+        pending_payments_col.delete_one({"user_id": u_id})
 
     except Exception as e:
         bot.send_message(
